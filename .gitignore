@@ -1,3 +1,5 @@
 venv/
 *.csv
 !*.dev.csv
+__pycache__
+artifacts
