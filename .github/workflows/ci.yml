@@ -1,0 +1,90 @@
+name: CI – Health & Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start API server
+        run: |
+          uvicorn api.app:app --host 0.0.0.0 --port 8000 &
+          echo "Waiting for server to start..."
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is up!"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)
+          BODY=$(curl -s http://localhost:8000/health)
+          echo "Status code: $STATUS"
+          echo "Response: $BODY"
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed!"
+            exit 1
+          fi
+
+      - name: Smoke test – POST /predict
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{
+              "records": [
+                {
+                  "TicketID": 123,
+                  "BillID": 999,
+                  "Price": 250000,
+                  "CouponDiscount": 0,
+                  "Vehicle": "Bus",
+                  "VehicleClass": "VIP",
+                  "Created": "2025-01-10T10:00",
+                  "DepartureTime": "2025-01-12T08:00",
+                  "Male": true,
+                  "Domestic": true,
+                  "Cancel": false
+                }
+              ]
+            }')
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | sed '$d')
+
+          echo "Status code: $HTTP_CODE"
+          echo "Response: $BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Predict endpoint failed!"
+            exit 1
+          fi
+
+          # Verify response contains expected fields
+          echo "$BODY" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assert 'predictions' in data, 'Missing predictions field'
+          assert 'probabilities' in data, 'Missing probabilities field'
+          assert 'threshold' in data, 'Missing threshold field'
+          assert len(data['predictions']) == 1, 'Expected 1 prediction'
+          print('All assertions passed.')
+          "
